@@ -10,6 +10,7 @@ import (
 const (
 	UserIDHeader    = "X-User-ID"
 	SignatureHeader = "X-User-Signature"
+	APIKeyHeader    = "X-API-Key"
 )
 
 // Verify checks that signature = HMAC-SHA256(userID, secret).
@@ -23,8 +24,8 @@ func Verify(userID, signature, secret string) bool {
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
-// Middleware returns an HTTP middleware that validates X-User-ID via X-User-Signature.
-// If secret is empty, the middleware passes all requests (dev mode).
+// Middleware returns middleware that checks auth via HMAC (X-User-ID + X-User-Signature)
+// with fallback to legacy X-API-Key. If secret is empty, passes all requests (dev mode).
 // onReject is called when auth fails (write 401 response).
 func Middleware(secret string, onReject func(w http.ResponseWriter, r *http.Request)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -33,13 +34,24 @@ func Middleware(secret string, onReject func(w http.ResponseWriter, r *http.Requ
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Try HMAC first
 			userID := r.Header.Get(UserIDHeader)
 			signature := r.Header.Get(SignatureHeader)
-			if !Verify(userID, signature, secret) {
+			if userID != "" && signature != "" {
+				if Verify(userID, signature, secret) {
+					next.ServeHTTP(w, r)
+					return
+				}
 				if onReject != nil {
 					onReject(w, r)
-				} else {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
+				}
+				return
+			}
+			// Fallback: legacy X-API-Key
+			key := r.Header.Get(APIKeyHeader)
+			if key != secret {
+				if onReject != nil {
+					onReject(w, r)
 				}
 				return
 			}
